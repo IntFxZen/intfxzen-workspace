@@ -1,6 +1,6 @@
-# Open Source Contributions to OpenVINO contrib
+# Open Source Work: [openvino_contrib](https://github.com/openvinotoolkit/openvino_contrib)
 
-Contributions to the openvino_contrib repository (openvino-notes module).
+Implementing features for the openvino-notes module.
 
 ## ON-001-01: Account-bound token access and reset
 [PR #1168](https://github.com/openvinotoolkit/openvino_contrib/pull/1168) · ✅ Merged
