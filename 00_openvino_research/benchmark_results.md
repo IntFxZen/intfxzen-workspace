@@ -18,7 +18,7 @@
 > *"Server note: in `-hint latency` mode, the 64-core Graviton4 is limited to 1 stream, so 63 cores sit idle, and synchronization overhead reduces the overall FPS. This is an architectural feature of Latency mode — it is optimized for minimum latency of a single request, not for maximum throughput. In Throughput mode, the server delivers 13.49 FPS (FP32) and 16.16 FPS (INT8), but the standard benchmark_app on ARM does not allow all 64 cores to be utilized without manual plugin tuning."*
 
 **2. Additional study: Native Linux (Fedora) vs WSL2**
-*(Measurements with threads strictly fixed at `6` via `-nthreads 6`)*
+*(Measurements with threads strictly fixed at `6` via `-nthreads 6`). Both environments were tested on the same hardware: Intel Core i7-13700H.*
 
 | Environment | Model | Latency (Median) | Throughput | Conclusion |
 | :--- | :--- | :--- | :--- | :--- |
