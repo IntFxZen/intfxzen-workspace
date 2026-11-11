@@ -23,7 +23,7 @@
 *   **First inference took:** 676.44 ms
 
 <p align="center">
-  <img src="assets/android-arm64_benchmark_report.png" width="40%" alt="Android Benchmark Console">
+  <img src="../assets/android-arm64_benchmark_report.png" width="40%" alt="Android Benchmark Console">
   <br>
   <i>Figure 1: Benchmark results for YOLO26n on Poco X3 Pro (ARM64)</i>
 </p>
