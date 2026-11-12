@@ -37,6 +37,6 @@ To ensure fair comparison, the `benchmark_app` was executed with identical param
 | **WSL2 (Ubuntu)** | INT8 | 8.76 ms | 108.02 FPS | Hyper-V overhead with INT8 |
 
 **Virtualization conclusion:**
-WSL2 is excellent for local development and code debugging (FP32 losses are minimal). However, with heavy INT8 computations, Hyper-V overhead becomes noticeable (~27% FPS drop), since the virtual machine passes through CPU-specific instructions less efficiently.
+WSL2 is excellent for local development and code debugging (FP32 losses are minimal). However, with intensive INT8 workloads, Hyper-V overhead becomes noticeable (~27% FPS drop), since the virtual machine passes through CPU-specific instructions less efficiently.
 
 ***
