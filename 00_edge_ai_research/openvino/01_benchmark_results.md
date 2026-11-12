@@ -1,5 +1,14 @@
 ### 📊 OpenVINO Performance Comparison (YOLO26n)
 
+## ⚙️ Benchmark Parameters
+To ensure fair comparison, the `benchmark_app` was executed with identical parameters across all devices:
+*   **Command:** `benchmark_app -m yolo26n.xml -d CPU -niter 100 -hint latency`
+*   **Device:** CPU only (no GPU/NPU delegation).
+*   **Iterations:** 100.
+*   **Performance Hint:** Latency (optimized for single-request speed, not throughput).
+
+*(Note: For the Fedora/WSL2 comparison, threads were strictly limited to `-nthreads 6` to match the hardware environment).*
+
 | Metric / Model | 🍏 macOS (M1) | 🤖 Android (Snapdragon 860) | 🐧 Linux (AWS Graviton4) |
 | :--- | :--- | :--- | :--- |
 | **Device (CPU)** | Apple M1 | Snapdragon 860 | ARM Neoverse-V2 (64 cores) |
@@ -8,10 +17,10 @@
 | *Latency (Median)* | **72.77 ms** | **633.73 ms** | **78.85 ms** |
 | *Throughput (FPS)* | **68.45 FPS** | **3.14 FPS** | **12.68 FPS** |
 | | | | |
-| **YOLO26n (INT8)** | | | |
+| **YOLO26n (INT8)** | | | | |
 | *Latency (Median)* | **110.62 ms** | ❌ *Error* | **66.22 ms** |
 | *Throughput (FPS)* | **50.93 FPS** | ❌ *Error* | **15.09 FPS** |
-| *INT8 Status* | Slower than FP32 (no hardware instructions) | `object is not initialized` | Minor boost (stream tuning required) |
+| *INT8 Status* | Slower than FP32 (missing optimized INT8 kernels in OpenVINO for Apple Silicon) | `object is not initialized` | Minor boost (stream tuning required) |
 
 ***
 
