@@ -8,7 +8,7 @@
 | **Failure Stage** | `compile_model` (`Step 7/11` in `benchmark_app`), reproduces with `-infer_precision f32` |
 
 > [!IMPORTANT]
-> **TL;DR:** Under `OV_CPU_WITH_ACL`, `Convolution::canFuse` permits fusing a **per-channel** `FakeQuantize` after `Swish` into an `f16` convolution. `DnnlPostOpsComposer` lowers this into the x86-oriented `quantization_quantize_dequantize` post-op, which is rejected by every ARM64 oneDNN backend (ACL, `ref:any`, `ref_fused_convolution:any`). With no valid `primitive_desc` created, accessing the empty handle throws `object is not initialized`.
+> **TL;DR:** Under `OV_CPU_WITH_ACL`, `Convolution::canFuse` permits fusing a **per-channel** `FakeQuantize` after `Swish` into floating-point (`f16`/`f32`, non-`u8`/`i8`) convolutions. `DnnlPostOpsComposer` lowers this into the x86-oriented `quantization_quantize_dequantize` post-op, which is rejected by every ARM64 oneDNN backend (ACL, `ref:any`, `ref_fused_convolution:any`). With no valid `primitive_desc` created, accessing the empty handle throws `object is not initialized`.
 
 ---
 
@@ -22,17 +22,27 @@ object is not initialized
 
 ## Failure Flow
 
-```mermaid
-flowchart TD
-    A["Conv (f16) + Swish + per-channel FakeQuantize"] --> B["Convolution::canFuse (OV_CPU_WITH_ACL)<br/>Allows fusion without per-channel check"]
-    B --> C["DnnlPostOpsComposer::appendAttrPostOpsLegacy<br/>Appends quantization_quantize_dequantize"]
-    C --> D{"oneDNN ARM64 Dispatch"}
-    D -->|"ACL"| E["Unsupported post-op"]
-    D -->|"ref:any"| F["ref_convolution.hpp:80<br/>unsupported post-ops"]
-    D -->|"ref_fused_convolution"| G["ref_fused_convolution.hpp:87<br/>unsupported attribute"]
-    E --> H["Empty primitive_desc (undef_f16)<br/>Throws: object is not initialized"]
-    F --> H
-    G --> H
+```text
+         Conv (f16/f32) + Swish + per-channel FakeQuantize
+                                 │
+                                 ▼
+               Convolution::canFuse (OV_CPU_WITH_ACL)
+               └─ allows fusion without per-channel check
+                                 │
+                                 ▼
+            DnnlPostOpsComposer::appendAttrPostOpsLegacy
+            └─ appends quantization_quantize_dequantize
+                                 │
+                                 ▼
+                       oneDNN ARM64 Dispatch
+        ┌────────────────────────┼────────────────────────┐
+        ▼                        ▼                        ▼
+       ACL                    ref:any           ref_fused_convolution
+  (unsupported)      (ref_convolution.hpp:80) (ref_fused_convolution.hpp:87)
+        └────────────────────────┼────────────────────────┘
+                                 ▼
+                 Empty primitive_desc (undef_f16)
+               Throws: "object is not initialized"
 ```
 
 ---
@@ -43,7 +53,7 @@ From `ONEDNN_VERBOSE=all` and the execution graph dump, compilation fails on lay
 
 - **Node:** `__module.model.23.cv3.0.0.1.conv/aten::_convolution/Convolution` (`1x1`, `ic=64`, `oc=80`, `80x80`)
 - **Fused subgraph:** `Convolution + Add + Swish_76 + Swish_76/fq_output_0 (FakeQuantize)`
-- **Key difference vs. working layers:** preceding `FakeQuantize` nodes (e.g., `Swish_75/fq_output_0`) use **per-tensor** bounds (`shape=""`), whereas `Swish_76/fq_output_0` uses **per-channel** bounds (`shape="1, 80, 1, 1"`, right before a depthwise `GroupConvolution`).
+- **Key difference vs. working layers:** preceding `FakeQuantize` nodes (e.g., `Swish_75/fq_output_0`) use **per-tensor** bounds (`shape=""`), whereas `Swish_76/fq_output_0` uses **per-channel** bounds (`shape="1, 80, 1, 1"`, placed right before a depthwise `GroupConvolution`).
 
 <details>
 <summary><strong>Click to expand <code>ONEDNN_VERBOSE=all</code> dispatch failure log</strong></summary>
@@ -60,7 +70,7 @@ onednn_verbose,v1,primitive,create:dispatch,convolution,cpu,convolution,ref_fuse
 ## Root Cause Analysis
 
 ### 1. Missing per-channel guard in `Convolution::canFuse`
-In `src/plugins/intel_cpu/src/nodes/conv.cpp:590–603` (`#if defined(OV_CPU_WITH_ACL)`), when the convolution input precision is `f16` (post-dequantization), `FakeQuantize` is allowed to fuse after `Swish` without checking whether its parameters are per-channel:
+In `src/plugins/intel_cpu/src/nodes/conv.cpp:590–603` (`#if defined(OV_CPU_WITH_ACL)`), when the convolution input precision is floating-point (`f16` by default after dequantization, or `f32` with `-infer_precision f32`), `FakeQuantize` is allowed to fuse after `Swish` without checking whether its parameters are per-channel:
 
 ```cpp
 if (fusedWith.back()->getType() == Type::Eltwise && node->getType() == Type::FakeQuantize) {
@@ -70,7 +80,7 @@ if (fusedWith.back()->getType() == Type::Eltwise && node->getType() == Type::Fak
         fusedWith.back()->getAlgorithm() == Algorithm::EltwiseSwish) {
         return false;
     }
-    ...
+    // ...
     return canFuseSimpleOperation(node); // Allows per-channel FQ for f16/f32 inputs
 }
 ```
@@ -82,23 +92,24 @@ In `src/plugins/intel_cpu/src/dnnl_postops_composer.cpp:937–1038, 1123–1136`
 dnnl::algorithm alg = postOp.type() == FakeQuantizePostOp::Type::quantization_only
                           ? dnnl::algorithm::quantization_quantize
                           : dnnl::algorithm::quantization_quantize_dequantize;
-...
+// ...
 ops.append_quantization(alg, per_channel, all_default, offsets);
 ```
 
 ### 3. Universal backend rejection and empty handle exception
 - **ACL backend:** does not support `eltwise_swish + quantization_quantize_dequantize`.
-- **`ref:any`** (`src/cpu/ref_convolution.hpp:80`): `ref_post_ops_t::post_ops_ok()` rejects `quantization`.
-- **`ref_fused_convolution:any`** (`src/cpu/ref_fused_convolution.hpp:85–87`): only accepts `{binary, eltwise, convolution}`:
+- **`ref:any`** (`src/plugins/intel_cpu/thirdparty/onednn/src/cpu/ref_convolution.hpp:80, 98–100`): `ref_post_ops_t::post_ops_ok()` rejects `quantization`.
+- **`ref_fused_convolution:any`** (`src/plugins/intel_cpu/thirdparty/onednn/src/cpu/ref_fused_convolution.hpp:85–87`): only accepts `{binary, eltwise, convolution}`:
   ```cpp
   VDISPATCH_CONV(attr()->post_ops_.has_default_values(
                          {binary, eltwise, convolution}),
           VERBOSE_UNSUPPORTED_ATTR);
   ```
-- No `primitive_desc` is constructed (`primitiveType: undef_f16`), causing `include/oneapi/dnnl/dnnl_common.hpp:177–179` to throw:
+- No `primitive_desc` is constructed (`primitiveType: undef_f16`), causing `src/plugins/intel_cpu/thirdparty/onednn/include/oneapi/dnnl/dnnl_common.hpp:177–179` to throw:
   ```cpp
   if (allow_empty == false && result == nullptr)
-      DNNL_THROW_ERROR(dnnl_invalid_arguments, "object is not initialized");
+      DNNL_THROW_ERROR(
+              dnnl_invalid_arguments, "object is not initialized");
   ```
 
 ---
@@ -109,15 +120,15 @@ Two minimal 3-layer models (`Conv 1x1 (64→80, 80x80) -> Swish -> FakeQuantize`
 
 | Reproducer | `FakeQuantize` Bounds | Status | Details |
 | :--- | :--- | :---: | :--- |
-| `repro_scalar_fq.xml` | Per-tensor (`shape=""`) | ✅ Passed | Compile: `74.76 ms` · Inference: `2012.35 ms` (`ref_any_f16`) |
-| `repro_per_channel_fq.xml` | Per-channel (`1x80x1x1`) | ❌ Crashed | Failed at `Step 7/11`: `object is not initialized` |
+| `repro_scalar_fq.xml` | Per-tensor (`shape=""`) | ✅ Passed | Compile: `74.76 ms` · Inference: `2012.35 ms` |
+| `repro_per_channel_fq.xml` | Per-channel (`shape="1, 80, 1, 1"`) | ❌ Crashed | Failed at `Step 7/11`: `object is not initialized` |
 
 ---
 
 ## Performance Side Effect & Proposed Fixes
 
 > [!WARNING]
-> **Severe Performance Fallback:** Even when `FakeQuantize` is per-tensor (non-crashing), fusing `Swish + FakeQuantize` into an `f16` convolution is unsupported by ACL. As a result, most convolutions in the model silently fall back to `ref_any_f16` (taking **`2012.35 ms`** for a single `1x1` convolution in the reproducer above).
+> **Severe Performance Fallback:** Even when `FakeQuantize` is per-tensor (non-crashing), fusing `Swish + FakeQuantize` into an `f16` convolution is unsupported by ACL. In the full model's execution graph, most convolutions silently fall back to `ref_any_f16` instead of `gemm_acl_f16` (consistent with the **`2012.35 ms`** latency observed for a single `1x1` convolution in `repro_scalar_fq.xml`).
 
-- **Crash Fix:** In `Convolution::canFuse` (`OV_CPU_WITH_ACL`), disallow fusing `FakeQuantize` nodes that require `quantization_quantize_dequantize` (per-channel) so they execute as standalone nodes.
+- **Crash Fix:** In `Convolution::canFuse` (`OV_CPU_WITH_ACL`), disallow fusing per-channel `FakeQuantize` nodes (both after `Eltwise` at lines `590–603` and directly on `Convolution` at lines `610–616` / `627`) so they execute as standalone nodes instead of lowering to `quantization_quantize_dequantize`.
 - **Performance Fix:** Restrict fusing `Swish` / `FakeQuantize` post-ops into `f16` convolutions under ACL to prevent mass fallback to `ref_any_f16` and restore execution on `gemm_acl_f16`.
