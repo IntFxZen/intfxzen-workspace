@@ -22,27 +22,17 @@ object is not initialized
 
 ## Failure Flow
 
-```text
-         Conv (f16/f32) + Swish + per-channel FakeQuantize
-                                 │
-                                 ▼
-               Convolution::canFuse (OV_CPU_WITH_ACL)
-               └─ allows fusion without per-channel check
-                                 │
-                                 ▼
-            DnnlPostOpsComposer::appendAttrPostOpsLegacy
-            └─ appends quantization_quantize_dequantize
-                                 │
-                                 ▼
-                       oneDNN ARM64 Dispatch
-        ┌────────────────────────┼────────────────────────┐
-        ▼                        ▼                        ▼
-       ACL                    ref:any           ref_fused_convolution
-  (unsupported)      (ref_convolution.hpp:80) (ref_fused_convolution.hpp:87)
-        └────────────────────────┼────────────────────────┘
-                                 ▼
-                 Empty primitive_desc (undef_f16)
-               Throws: "object is not initialized"
+```mermaid
+flowchart TD
+    A["Conv (f16/f32) + Swish + per-channel FakeQuantize"] --> B["Convolution::canFuse (OV_CPU_WITH_ACL)<br/>Allows fusion without per-channel check"]
+    B --> C["DnnlPostOpsComposer::appendAttrPostOpsLegacy<br/>Appends quantization_quantize_dequantize"]
+    C --> D{"oneDNN ARM64 Dispatch"}
+    D -->|"ACL"| E["Unsupported post-op"]
+    D -->|"ref:any"| F["ref_convolution.hpp:80<br/>unsupported post-ops"]
+    D -->|"ref_fused_convolution"| G["ref_fused_convolution.hpp:87<br/>unsupported attribute"]
+    E --> H["Empty primitive_desc (undef_f16)<br/>Throws: object is not initialized"]
+    F --> H
+    G --> H
 ```
 
 ---
